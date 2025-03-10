@@ -7,11 +7,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/policy"
+	policyv1 "github.com/juanfont/headscale/hscontrol/policy/v1"
 	"github.com/juanfont/headscale/integration/hsic"
 	"github.com/juanfont/headscale/integration/tsic"
 	"github.com/stretchr/testify/assert"
 )
+
+func isSSHNoAccessStdError(stderr string) bool {
+	return strings.Contains(stderr, "Permission denied (tailscale)") ||
+		// Since https://github.com/tailscale/tailscale/pull/14853
+		strings.Contains(stderr, "failed to evaluate SSH policy")
+}
 
 var retry = func(times int, sleepInterval time.Duration,
 	doWork func() (string, string, error),
@@ -31,8 +37,8 @@ var retry = func(times int, sleepInterval time.Duration,
 		}
 
 		// If we get a permission denied error, we can fail immediately
-		// since that is something we wont recover from by retrying.
-		if err != nil && strings.Contains(stderr, "Permission denied (tailscale)") {
+		// since that is something we won-t recover from by retrying.
+		if err != nil && isSSHNoAccessStdError(stderr) {
 			return result, stderr, err
 		}
 
@@ -42,9 +48,9 @@ var retry = func(times int, sleepInterval time.Duration,
 	return result, stderr, err
 }
 
-func sshScenario(t *testing.T, policy *policy.ACLPolicy, clientsPerUser int) *Scenario {
+func sshScenario(t *testing.T, policy *policyv1.ACLPolicy, clientsPerUser int) *Scenario {
 	t.Helper()
-	scenario, err := NewScenario()
+	scenario, err := NewScenario(dockertestMaxWait())
 	assertNoErr(t, err)
 
 	spec := map[string]int{
@@ -69,9 +75,6 @@ func sshScenario(t *testing.T, policy *policy.ACLPolicy, clientsPerUser int) *Sc
 		},
 		hsic.WithACLPolicy(policy),
 		hsic.WithTestName("ssh"),
-		hsic.WithConfigEnv(map[string]string{
-			"HEADSCALE_EXPERIMENTAL_FEATURE_SSH": "1",
-		}),
 	)
 	assertNoErr(t, err)
 
@@ -89,18 +92,18 @@ func TestSSHOneUserToAll(t *testing.T) {
 	t.Parallel()
 
 	scenario := sshScenario(t,
-		&policy.ACLPolicy{
+		&policyv1.ACLPolicy{
 			Groups: map[string][]string{
 				"group:integration-test": {"user1"},
 			},
-			ACLs: []policy.ACL{
+			ACLs: []policyv1.ACL{
 				{
 					Action:       "accept",
 					Sources:      []string{"*"},
 					Destinations: []string{"*:*"},
 				},
 			},
-			SSHs: []policy.SSH{
+			SSHs: []policyv1.SSH{
 				{
 					Action:       "accept",
 					Sources:      []string{"group:integration-test"},
@@ -109,9 +112,9 @@ func TestSSHOneUserToAll(t *testing.T) {
 				},
 			},
 		},
-		len(MustTestVersions)-2,
+		len(MustTestVersions),
 	)
-	defer scenario.Shutdown()
+	defer scenario.ShutdownAssertNoPanics(t)
 
 	allClients, err := scenario.ListTailscaleClients()
 	assertNoErrListClients(t, err)
@@ -154,18 +157,18 @@ func TestSSHMultipleUsersAllToAll(t *testing.T) {
 	t.Parallel()
 
 	scenario := sshScenario(t,
-		&policy.ACLPolicy{
+		&policyv1.ACLPolicy{
 			Groups: map[string][]string{
 				"group:integration-test": {"user1", "user2"},
 			},
-			ACLs: []policy.ACL{
+			ACLs: []policyv1.ACL{
 				{
 					Action:       "accept",
 					Sources:      []string{"*"},
 					Destinations: []string{"*:*"},
 				},
 			},
-			SSHs: []policy.SSH{
+			SSHs: []policyv1.SSH{
 				{
 					Action:       "accept",
 					Sources:      []string{"group:integration-test"},
@@ -174,9 +177,9 @@ func TestSSHMultipleUsersAllToAll(t *testing.T) {
 				},
 			},
 		},
-		len(MustTestVersions)-2,
+		len(MustTestVersions),
 	)
-	defer scenario.Shutdown()
+	defer scenario.ShutdownAssertNoPanics(t)
 
 	nsOneClients, err := scenario.ListTailscaleClients("user1")
 	assertNoErrListClients(t, err)
@@ -207,22 +210,22 @@ func TestSSHNoSSHConfigured(t *testing.T) {
 	t.Parallel()
 
 	scenario := sshScenario(t,
-		&policy.ACLPolicy{
+		&policyv1.ACLPolicy{
 			Groups: map[string][]string{
 				"group:integration-test": {"user1"},
 			},
-			ACLs: []policy.ACL{
+			ACLs: []policyv1.ACL{
 				{
 					Action:       "accept",
 					Sources:      []string{"*"},
 					Destinations: []string{"*:*"},
 				},
 			},
-			SSHs: []policy.SSH{},
+			SSHs: []policyv1.SSH{},
 		},
-		len(MustTestVersions)-2,
+		len(MustTestVersions),
 	)
-	defer scenario.Shutdown()
+	defer scenario.ShutdownAssertNoPanics(t)
 
 	allClients, err := scenario.ListTailscaleClients()
 	assertNoErrListClients(t, err)
@@ -249,18 +252,18 @@ func TestSSHIsBlockedInACL(t *testing.T) {
 	t.Parallel()
 
 	scenario := sshScenario(t,
-		&policy.ACLPolicy{
+		&policyv1.ACLPolicy{
 			Groups: map[string][]string{
 				"group:integration-test": {"user1"},
 			},
-			ACLs: []policy.ACL{
+			ACLs: []policyv1.ACL{
 				{
 					Action:       "accept",
 					Sources:      []string{"*"},
 					Destinations: []string{"*:80"},
 				},
 			},
-			SSHs: []policy.SSH{
+			SSHs: []policyv1.SSH{
 				{
 					Action:       "accept",
 					Sources:      []string{"group:integration-test"},
@@ -269,9 +272,9 @@ func TestSSHIsBlockedInACL(t *testing.T) {
 				},
 			},
 		},
-		len(MustTestVersions)-2,
+		len(MustTestVersions),
 	)
-	defer scenario.Shutdown()
+	defer scenario.ShutdownAssertNoPanics(t)
 
 	allClients, err := scenario.ListTailscaleClients()
 	assertNoErrListClients(t, err)
@@ -298,19 +301,19 @@ func TestSSHUserOnlyIsolation(t *testing.T) {
 	t.Parallel()
 
 	scenario := sshScenario(t,
-		&policy.ACLPolicy{
+		&policyv1.ACLPolicy{
 			Groups: map[string][]string{
 				"group:ssh1": {"user1"},
 				"group:ssh2": {"user2"},
 			},
-			ACLs: []policy.ACL{
+			ACLs: []policyv1.ACL{
 				{
 					Action:       "accept",
 					Sources:      []string{"*"},
 					Destinations: []string{"*:*"},
 				},
 			},
-			SSHs: []policy.SSH{
+			SSHs: []policyv1.SSH{
 				{
 					Action:       "accept",
 					Sources:      []string{"group:ssh1"},
@@ -325,9 +328,9 @@ func TestSSHUserOnlyIsolation(t *testing.T) {
 				},
 			},
 		},
-		len(MustTestVersions)-2,
+		len(MustTestVersions),
 	)
-	defer scenario.Shutdown()
+	defer scenario.ShutdownAssertNoPanics(t)
 
 	ssh1Clients, err := scenario.ListTailscaleClients("user1")
 	assertNoErrListClients(t, err)
@@ -413,11 +416,11 @@ func assertSSHHostname(t *testing.T, client TailscaleClient, peer TailscaleClien
 func assertSSHPermissionDenied(t *testing.T, client TailscaleClient, peer TailscaleClient) {
 	t.Helper()
 
-	result, stderr, _ := doSSH(t, client, peer)
+	result, stderr, err := doSSH(t, client, peer)
 
 	assert.Empty(t, result)
 
-	assertContains(t, stderr, "Permission denied (tailscale)")
+	assertSSHNoAccessStdError(t, err, stderr)
 }
 
 func assertSSHTimeout(t *testing.T, client TailscaleClient, peer TailscaleClient) {
@@ -430,5 +433,13 @@ func assertSSHTimeout(t *testing.T, client TailscaleClient, peer TailscaleClient
 	if !strings.Contains(stderr, "Connection timed out") &&
 		!strings.Contains(stderr, "Operation timed out") {
 		t.Fatalf("connection did not time out")
+	}
+}
+
+func assertSSHNoAccessStdError(t *testing.T, err error, stderr string) {
+	t.Helper()
+	assert.Error(t, err)
+	if !isSSHNoAccessStdError(stderr) {
+		t.Errorf("expected stderr output suggesting access denied, got: %s", stderr)
 	}
 }
